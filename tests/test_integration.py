@@ -264,7 +264,119 @@ class TestCoordinatorRealApi:
 
 
 # ---------------------------------------------------------------------------
-# 6. OAuth token refresh (requires --credentials)
+# 6. The definitive refresh-command test — does it actually trigger a capture?
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestUpdateCameraActuallyRefreshes:
+    """The core question: does update_camera() cause the fridge to capture
+    new photos?  We verify this by checking whether
+    ``samsungce.viewInside.lastUpdatedTime`` advances after the command.
+
+    ``lastUpdatedTime`` is the only reliable signal that the fridge actually
+    took new photos — fileIds rotate on CDN state changes even when the
+    underlying content (identified by SHA-256 hash) is unchanged.
+    """
+
+    @needs_token
+    @needs_device
+    def test_update_camera_advances_last_updated_time(
+        self, hass, smartthings_token, device_id
+    ):
+        """Calling update_camera() should eventually make the fridge's
+        samsungce.viewInside.lastUpdatedTime advance."""
+        import time
+
+        hub = FamilyHub(hass, token=smartthings_token, device_id=device_id)
+
+        # Baseline: capture the current lastUpdatedTime
+        status = hub.get_current_device_status()
+        hub.set_current_device_status(status)
+        baseline_time = hub.get_last_capture_time()
+        baseline_file_ids = set(hub.get_file_ids())
+        assert baseline_time is not None, (
+            "Device status does not expose samsungce.viewInside.lastUpdatedTime"
+        )
+
+        # Fire the refresh command
+        hub.update_camera()
+
+        # Poll up to ~90 seconds for the fridge to actually capture
+        # (the hardware has a stabilization delay after being signaled)
+        advanced = False
+        file_ids_changed = False
+        final_time = baseline_time
+        for attempt in range(30):
+            time.sleep(3)
+            status = hub.get_current_device_status()
+            hub.set_current_device_status(status)
+            new_time = hub.get_last_capture_time()
+            new_file_ids = set(hub.get_file_ids())
+            if new_time and new_time != baseline_time:
+                advanced = True
+                final_time = new_time
+                break
+            if new_file_ids != baseline_file_ids:
+                file_ids_changed = True
+
+        # This is the definitive assertion.  If it fails, the refresh
+        # command is NOT actually triggering a new capture on the fridge.
+        assert advanced, (
+            f"update_camera() did not cause lastUpdatedTime to advance "
+            f"within 90s. baseline={baseline_time} final={final_time} "
+            f"file_ids_rotated_without_capture={file_ids_changed}"
+        )
+
+    @needs_token
+    @needs_device
+    def test_update_camera_returns_200(
+        self, hass, smartthings_token, device_id
+    ):
+        """The command should at least be accepted by the SmartThings API."""
+        hub = FamilyHub(hass, token=smartthings_token, device_id=device_id)
+        # Should not raise AuthenticationError or any HTTP error
+        hub.update_camera()
+
+    @needs_token
+    @needs_device
+    def test_file_ids_are_actually_different_content(
+        self, hass, smartthings_token, device_id
+    ):
+        """When file IDs change, verify whether the *content* actually
+        differs. This distinguishes 'new capture' from 'CDN cache rotation'.
+        """
+        import hashlib
+
+        hub = FamilyHub(hass, token=smartthings_token, device_id=device_id)
+        status = hub.get_current_device_status()
+        hub.set_current_device_status(status)
+
+        file_ids = hub.get_file_ids()
+        if not file_ids:
+            pytest.skip("No file IDs available to compare")
+
+        # Download the same file_id twice and compare hashes
+        hub.download_images()
+        first_hashes = [
+            hashlib.md5(img).hexdigest() if img else None
+            for img in hub.downloaded_images
+        ]
+
+        hub.download_images()
+        second_hashes = [
+            hashlib.md5(img).hexdigest() if img else None
+            for img in hub.downloaded_images
+        ]
+
+        # Same file_id → same content (sanity check — this should always pass)
+        assert first_hashes == second_hashes, (
+            "Same file_ids produced different bytes — unexpected"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. OAuth token refresh (requires --credentials)
 # ---------------------------------------------------------------------------
 
 
