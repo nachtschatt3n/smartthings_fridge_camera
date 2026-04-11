@@ -1,0 +1,7 @@
+refresh:
+  name: Refresh camera
+  description: >
+    Send the refresh command to the Samsung Family Hub fridge to request a
+    fresh camera capture. The fridge's response depends on its current state
+    and auth context; this service is intended for manual recovery or
+    debugging. Normal operation refreshes automatically on fridge door close.
