@@ -275,6 +275,24 @@ class FamilyHub:
             )
             return []
 
+    def get_last_capture_time(self) -> str | None:
+        """Return the ISO timestamp of the fridge's last actual photo capture.
+
+        Reads ``samsungce.viewInside.lastUpdatedTime`` — the timestamp the
+        fridge hardware populated when it last took new photos. This is
+        the only reliable signal of a real capture because file IDs may
+        rotate on CDN state changes without the underlying content
+        (SHA-256 hashed in CloudFront) actually changing.
+        """
+        if not self._current_device_status:
+            return None
+        try:
+            return self._current_device_status["samsungce.viewInside"][
+                "lastUpdatedTime"
+            ]["value"]
+        except (KeyError, TypeError):
+            return None
+
     def set_device_id(self):
         """Extract device ID from the device status list."""
         if not self._device_status:

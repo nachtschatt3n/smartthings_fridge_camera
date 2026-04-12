@@ -285,7 +285,11 @@ class TestUpdateCameraActuallyRefreshes:
         self, hass, smartthings_token, device_id
     ):
         """Calling update_camera() should eventually make the fridge's
-        samsungce.viewInside.lastUpdatedTime advance."""
+        samsungce.viewInside.lastUpdatedTime advance.
+
+        The Samsung API rate-limit is 10 requests / 30 seconds, so we
+        poll slowly (every 10s for up to 2 minutes) to stay under it.
+        """
         import time
 
         hub = FamilyHub(hass, token=smartthings_token, device_id=device_id)
@@ -302,13 +306,13 @@ class TestUpdateCameraActuallyRefreshes:
         # Fire the refresh command
         hub.update_camera()
 
-        # Poll up to ~90 seconds for the fridge to actually capture
-        # (the hardware has a stabilization delay after being signaled)
+        # Poll up to ~2 minutes for the fridge to actually capture.
+        # 12 polls × 10s = 120s, well under the "10 req / 30s" rate limit.
         advanced = False
         file_ids_changed = False
         final_time = baseline_time
-        for attempt in range(30):
-            time.sleep(3)
+        for attempt in range(12):
+            time.sleep(10)
             status = hub.get_current_device_status()
             hub.set_current_device_status(status)
             new_time = hub.get_last_capture_time()
@@ -324,7 +328,7 @@ class TestUpdateCameraActuallyRefreshes:
         # command is NOT actually triggering a new capture on the fridge.
         assert advanced, (
             f"update_camera() did not cause lastUpdatedTime to advance "
-            f"within 90s. baseline={baseline_time} final={final_time} "
+            f"within 120s. baseline={baseline_time} final={final_time} "
             f"file_ids_rotated_without_capture={file_ids_changed}"
         )
 
