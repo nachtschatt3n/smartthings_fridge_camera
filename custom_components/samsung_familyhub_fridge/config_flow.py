@@ -182,19 +182,31 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="pat", data_schema=STEP_PAT_DATA_SCHEMA, errors=errors
         )
 
-    # ---------------- Reauth ----------------
+    # ---------------- Reauth / Reconfigure ----------------
 
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
     ) -> FlowResult:
-        """Handle re-authentication when the token has expired."""
-        # OAuth-mode entries should never reach reauth: HA's OAuth2Session
-        # refreshes transparently and any hard failure is surfaced on the
-        # linked smartthings entry itself. If we do land here, offer both
-        # paths again so the user can re-link.
-        if entry_data.get(CONF_AUTH_MODE) == AUTH_MODE_OAUTH:
-            return await self.async_step_user()
-        return await self.async_step_reauth_confirm()
+        """Handle re-authentication when the token has expired.
+
+        Always route to the user menu — this lets users with PAT-mode
+        entries switch to OAuth-mode on the fly when they hit the 24h
+        PAT expiry, rather than being stuck re-entering new PATs.
+        OAuth-mode entries never reach here in practice (OAuth2Session
+        refreshes transparently), but if they do, the menu is the right
+        landing page.
+        """
+        return await self.async_step_user()
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle the Reconfigure button on the integration card.
+
+        Routes to the same menu the initial setup uses — lets users
+        switch between PAT and OAuth modes without deleting and re-adding.
+        """
+        return await self.async_step_user()
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
