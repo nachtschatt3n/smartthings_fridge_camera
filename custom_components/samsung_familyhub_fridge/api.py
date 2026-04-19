@@ -39,10 +39,10 @@ class DataCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         """Fetch data from API endpoint."""
+        # OAuth mode: refresh token before the call. PAT mode: no-op.
+        # Samsung mode: no-op on fast path; 401 below triggers re-login.
+        await self.api.async_ensure_fresh_token()
         try:
-            # OAuth mode: refresh the access token (if close to expiry) BEFORE
-            # any API call. No-op for PAT mode.
-            await self.api.async_ensure_fresh_token()
             if self.api.device_id is None:
                 _LOGGER.debug("No device_id — fetching device list")
                 status = await self._hass.async_add_executor_job(
@@ -84,16 +84,27 @@ class DataCoordinator(DataUpdateCoordinator):
                     self.api.get_file_ids(),
                 )
         except AuthenticationError as err:
+            # Samsung Account mode: re-login is idempotent (email+password).
+            # Try once; on success, HA will retry the coordinator naturally
+            # on the next cycle.
+            if self.api._samsung_credentials is not None:
+                recovered = await self.api.async_relogin_samsung()
+                if recovered:
+                    _LOGGER.info(
+                        "Samsung Account re-login succeeded — new token "
+                        "will be used on next poll"
+                    )
+                    return  # Don't surface as auth-failure; next poll retries
             raise ConfigEntryAuthFailed(
                 "SmartThings token expired or is invalid. "
-                "Please re-authenticate with a new token."
+                "Please re-authenticate."
             ) from err
 
 
 class FamilyHub:
     """SmartThings Family Hub fridge API client.
 
-    Two auth modes:
+    Three auth modes:
 
     1. PAT mode (default): caller provides a raw SmartThings token via
        `token=`. Token is static; caller is responsible for refresh via
@@ -103,7 +114,15 @@ class FamilyHub:
        ``OAuth2Session`` via `attach_oauth_session(session)`. Before every
        API call the coordinator awaits `async_ensure_fresh_token()` which
        asks HA's OAuth2Session to refresh the access token if it's close
-       to expiry — no manual refresh needed.
+       to expiry — no manual refresh needed. Works for generic SmartThings
+       data but NOT the Samsung-proprietary view-inside camera endpoint.
+
+    3. Samsung Account mode: caller attaches email+password credentials via
+       `attach_samsung_credentials(...)`. The hub can then re-login via
+       `async_ensure_fresh_token()` to obtain a fresh OEM bearer token that
+       works on the Samsung camera endpoint (`client.smartthings.com/...`).
+       `SamsungAccountAuth.login()` is idempotent, so on any 401 we just
+       re-log in.
     """
 
     def __init__(self, hass: HomeAssistant, token: str, device_id: str) -> None:
@@ -119,30 +138,85 @@ class FamilyHub:
         self.should_update = False
         self.downloaded_images = [None, None, None]
         self._oauth_session: "config_entry_oauth2_flow.OAuth2Session | None" = None
+        self._samsung_credentials: dict | None = None
+        # Callback the hub invokes when it refreshes the Samsung access_token
+        # (allows __init__.py to persist the new token to the config entry).
+        self._samsung_token_updated_cb = None
 
     def attach_oauth_session(
         self, session: "config_entry_oauth2_flow.OAuth2Session"
     ) -> None:
-        """Bind an HA OAuth2Session so tokens refresh automatically.
-
-        Once attached, `async_ensure_fresh_token()` consults this session
-        before every API call and updates the bearer header in place.
-        """
+        """Bind an HA OAuth2Session so tokens refresh automatically (OAuth mode)."""
         self._oauth_session = session
 
-    async def async_ensure_fresh_token(self) -> None:
-        """If running in OAuth mode, ensure the bearer token is still valid.
+    def attach_samsung_credentials(
+        self,
+        email: str,
+        password: str,
+        signin_client_id: str,
+        signin_client_secret: str,
+        on_token_updated=None,
+    ) -> None:
+        """Store Samsung Account credentials for automatic re-login on 401.
 
-        No-op for PAT mode. Safe to call on every poll — HA's OAuth2Session
-        only performs a network refresh when the access_token is within
-        a few seconds of expiring.
+        Unlike OAuth tokens (which have a refresh_token), Samsung Account
+        bearer tokens are obtained by re-submitting email+password. We keep
+        the credentials so `relogin_samsung()` can produce a fresh token
+        whenever the current one 401s. Pass `on_token_updated(new_token)`
+        to get a notification so the caller can persist it to the config
+        entry.
         """
-        if self._oauth_session is None:
+        self._samsung_credentials = {
+            "email": email,
+            "password": password,
+            "signin_client_id": signin_client_id,
+            "signin_client_secret": signin_client_secret,
+        }
+        self._samsung_token_updated_cb = on_token_updated
+
+    async def async_ensure_fresh_token(self) -> None:
+        """Make sure the bearer token is valid before an API call.
+
+        - OAuth mode: delegate to HA's OAuth2Session.
+        - Samsung mode: no-op unless the token is missing (initial setup
+          typically populates it). 401 recovery happens in `relogin_samsung()`,
+          which the coordinator calls on demand.
+        - PAT mode: no-op.
+        """
+        if self._oauth_session is not None:
+            await self._oauth_session.async_ensure_token_valid()
+            new_token = self._oauth_session.token.get("access_token")
+            if new_token and new_token != self.token:
+                self.update_token(new_token)
             return
-        await self._oauth_session.async_ensure_token_valid()
-        new_token = self._oauth_session.token.get("access_token")
-        if new_token and new_token != self.token:
-            self.update_token(new_token)
+        if self._samsung_credentials is not None and not self.token:
+            await self.async_relogin_samsung()
+
+    async def async_relogin_samsung(self) -> bool:
+        """Log into Samsung Account again and update the bearer token.
+
+        Returns True if re-login succeeded. Safe to call on 401 from any
+        Samsung-proprietary endpoint. `SamsungAccountAuth.login()` is
+        idempotent (just another email/password POST).
+        """
+        if self._samsung_credentials is None:
+            return False
+        # Lazy import — the auth module pulls `requests` and we want
+        # to keep the FamilyHub import path light for tests.
+        from .auth import SamsungAccountAuth
+        auth = SamsungAccountAuth(**self._samsung_credentials)
+        try:
+            creds = await self._hass.async_add_executor_job(auth.login)
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.warning("Samsung Account re-login failed: %s", err)
+            return False
+        self.update_token(creds.access_token)
+        if self._samsung_token_updated_cb is not None:
+            try:
+                self._samsung_token_updated_cb(creds.access_token)
+            except Exception as err:  # pylint: disable=broad-except
+                _LOGGER.debug("Samsung token-update callback raised: %s", err)
+        return True
 
     def update_token(self, token: str) -> None:
         """Update the API token (used after re-authentication or OAuth refresh)."""

@@ -16,9 +16,15 @@ from .api import AuthenticationError, FamilyHub
 from .const import (
     AUTH_MODE_OAUTH,
     AUTH_MODE_PAT,
+    AUTH_MODE_SAMSUNG,
     CONF_AUTH_MODE,
     CONF_DEVICE_ID,
     CONF_LINKED_SMARTTHINGS_ENTRY_ID,
+    CONF_SAMSUNG_ACCESS_TOKEN,
+    CONF_SAMSUNG_EMAIL,
+    CONF_SAMSUNG_PASSWORD,
+    CONF_SIGNIN_CLIENT_ID,
+    CONF_SIGNIN_CLIENT_SECRET,
     CONF_TOKEN,
     DOMAIN,
     SMARTTHINGS_DOMAIN,
@@ -49,6 +55,44 @@ async def _validate_pat(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, 
         data[CONF_DEVICE_ID] = hub.device_id
 
     return data
+
+
+async def _validate_samsung_account(
+    hass: HomeAssistant, data: dict[str, Any]
+) -> dict[str, Any]:
+    """Log into Samsung Account with email/password, validate, return creds + token."""
+    # Lazy import to keep config_flow light for tests
+    from .auth import SamsungAccountAuth
+
+    auth = SamsungAccountAuth(
+        email=data[CONF_SAMSUNG_EMAIL],
+        password=data[CONF_SAMSUNG_PASSWORD],
+        signin_client_id=data[CONF_SIGNIN_CLIENT_ID],
+        signin_client_secret=data[CONF_SIGNIN_CLIENT_SECRET],
+    )
+    try:
+        creds = await hass.async_add_executor_job(auth.login)
+    except Exception as err:  # pylint: disable=broad-except
+        _LOGGER.warning("Samsung Account login failed: %s", err)
+        raise InvalidAuth from err
+
+    # Probe the fridge with the resulting bearer token
+    hub = FamilyHub(hass, token=creds.access_token, device_id=data.get(CONF_DEVICE_ID))
+    try:
+        if not await hub.authenticate():
+            raise InvalidAuth
+    except AuthenticationError as err:
+        raise InvalidAuth from err
+
+    return {
+        CONF_AUTH_MODE: AUTH_MODE_SAMSUNG,
+        CONF_SAMSUNG_EMAIL: data[CONF_SAMSUNG_EMAIL],
+        CONF_SAMSUNG_PASSWORD: data[CONF_SAMSUNG_PASSWORD],
+        CONF_SIGNIN_CLIENT_ID: data[CONF_SIGNIN_CLIENT_ID],
+        CONF_SIGNIN_CLIENT_SECRET: data[CONF_SIGNIN_CLIENT_SECRET],
+        CONF_SAMSUNG_ACCESS_TOKEN: creds.access_token,
+        CONF_DEVICE_ID: data.get(CONF_DEVICE_ID) or hub.device_id,
+    }
 
 
 async def _validate_oauth(
@@ -104,14 +148,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """First step — offer OAuth reuse if a smartthings entry exists."""
+        """First step — menu: pick auth mode.
+
+        Order matters: `samsung_account` first (camera feed works),
+        then `oauth` (generic data only, no password needed), then `pat`.
+        """
+        options = ["samsung_account"]
         if _smartthings_entries(self.hass):
-            return self.async_show_menu(
-                step_id="user",
-                menu_options=["oauth", "pat"],
-            )
-        # No HA core smartthings entry → force PAT path
-        return await self.async_step_pat()
+            options.append("oauth")
+        options.append("pat")
+        return self.async_show_menu(step_id="user", menu_options=options)
 
     # ---------------- OAuth path ----------------
 
@@ -170,6 +216,46 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.source in (
             config_entries.SOURCE_REAUTH,
             config_entries.SOURCE_RECONFIGURE,
+        )
+
+    # ---------------- Samsung Account path (camera feed) ----------------
+
+    async def async_step_samsung_account(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Samsung Account email/password login — supports camera feed."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                data = await _validate_samsung_account(self.hass, user_input)
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected exception during Samsung Account validation")
+                errors["base"] = "unknown"
+            else:
+                if self._is_existing_entry_flow():
+                    existing = (
+                        self._get_reauth_entry()
+                        if self.source == config_entries.SOURCE_REAUTH
+                        else self._get_reconfigure_entry()
+                    )
+                    return self.async_update_reload_and_abort(existing, data=data)
+                return self.async_create_entry(
+                    title="Samsung Fridge Camera (Samsung Account)", data=data
+                )
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_SAMSUNG_EMAIL): str,
+                vol.Required(CONF_SAMSUNG_PASSWORD): str,
+                vol.Required(CONF_SIGNIN_CLIENT_ID): str,
+                vol.Required(CONF_SIGNIN_CLIENT_SECRET): str,
+                vol.Optional(CONF_DEVICE_ID): str,
+            }
+        )
+        return self.async_show_form(
+            step_id="samsung_account", data_schema=schema, errors=errors
         )
 
     # ---------------- PAT path (legacy) ----------------

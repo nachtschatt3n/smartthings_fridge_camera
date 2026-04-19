@@ -30,9 +30,15 @@ from .api import FamilyHub
 from .const import (
     AUTH_MODE_OAUTH,
     AUTH_MODE_PAT,
+    AUTH_MODE_SAMSUNG,
     CONF_AUTH_MODE,
     CONF_DEVICE_ID,
     CONF_LINKED_SMARTTHINGS_ENTRY_ID,
+    CONF_SAMSUNG_ACCESS_TOKEN,
+    CONF_SAMSUNG_EMAIL,
+    CONF_SAMSUNG_PASSWORD,
+    CONF_SIGNIN_CLIENT_ID,
+    CONF_SIGNIN_CLIENT_SECRET,
     CONF_TOKEN,
     DOMAIN,
     SMARTTHINGS_DOMAIN,
@@ -52,6 +58,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if auth_mode == AUTH_MODE_OAUTH:
         hub = await _build_oauth_hub(hass, entry, device_id)
+    elif auth_mode == AUTH_MODE_SAMSUNG:
+        hub = await _build_samsung_hub(hass, entry, device_id)
     else:
         # Legacy PAT path — unchanged from v0.0.x.
         token = entry.data.get(CONF_TOKEN)
@@ -121,6 +129,55 @@ async def _build_oauth_hub(
     token = session.token["access_token"]
     hub = FamilyHub(hass, token=token, device_id=device_id)
     hub.attach_oauth_session(session)
+    return hub
+
+
+async def _build_samsung_hub(
+    hass: HomeAssistant, entry: ConfigEntry, device_id: str | None
+) -> FamilyHub:
+    """Construct a FamilyHub authenticated via Samsung Account email/password.
+
+    Uses the access_token stored in the config entry if present. On 401,
+    `FamilyHub.async_relogin_samsung()` re-submits credentials to get a
+    fresh token — this callback persists it back to the config entry so
+    HA restarts resume with a working token.
+    """
+    email = entry.data.get(CONF_SAMSUNG_EMAIL)
+    password = entry.data.get(CONF_SAMSUNG_PASSWORD)
+    signin_client_id = entry.data.get(CONF_SIGNIN_CLIENT_ID)
+    signin_client_secret = entry.data.get(CONF_SIGNIN_CLIENT_SECRET)
+    if not all([email, password, signin_client_id, signin_client_secret]):
+        raise ConfigEntryNotReady(
+            "Samsung Account entry missing credentials. Reconfigure in Settings."
+        )
+
+    # Best-effort: use the stored token first; if None/stale, the first API
+    # call will 401 and the coordinator will re-login automatically.
+    token = entry.data.get(CONF_SAMSUNG_ACCESS_TOKEN) or ""
+    hub = FamilyHub(hass, token=token, device_id=device_id)
+
+    def _persist_token(new_token: str) -> None:
+        new_data = {**entry.data, CONF_SAMSUNG_ACCESS_TOKEN: new_token}
+        hass.config_entries.async_update_entry(entry, data=new_data)
+
+    hub.attach_samsung_credentials(
+        email=email,
+        password=password,
+        signin_client_id=signin_client_id,
+        signin_client_secret=signin_client_secret,
+        on_token_updated=_persist_token,
+    )
+
+    # If we have no token at all, do an initial login so the first poll
+    # doesn't need a 401-retry round-trip.
+    if not token:
+        try:
+            await hub.async_relogin_samsung()
+        except Exception as err:  # pylint: disable=broad-except
+            raise ConfigEntryNotReady(
+                f"Initial Samsung Account login failed: {err}"
+            ) from err
+
     return hub
 
 
