@@ -23,6 +23,8 @@ from .const import (
     CONF_SIGNIN_CLIENT_ID,
     CONF_SIGNIN_CLIENT_SECRET,
     CONF_TOKEN,
+    DEFAULT_SIGNIN_CLIENT_ID,
+    DEFAULT_SIGNIN_CLIENT_SECRET,
     DOMAIN,
 )
 
@@ -60,11 +62,15 @@ async def _validate_samsung_account(
     # Lazy import to keep config_flow light for tests
     from .auth import SamsungAccountAuth
 
+    # Use APK-extracted defaults if the user didn't override (typical case).
+    signin_id = data.get(CONF_SIGNIN_CLIENT_ID) or DEFAULT_SIGNIN_CLIENT_ID
+    signin_sec = data.get(CONF_SIGNIN_CLIENT_SECRET) or DEFAULT_SIGNIN_CLIENT_SECRET
+
     auth = SamsungAccountAuth(
         email=data[CONF_SAMSUNG_EMAIL],
         password=data[CONF_SAMSUNG_PASSWORD],
-        signin_client_id=data[CONF_SIGNIN_CLIENT_ID],
-        signin_client_secret=data[CONF_SIGNIN_CLIENT_SECRET],
+        signin_client_id=signin_id,
+        signin_client_secret=signin_sec,
     )
     try:
         creds = await hass.async_add_executor_job(auth.login)
@@ -84,8 +90,8 @@ async def _validate_samsung_account(
         CONF_AUTH_MODE: AUTH_MODE_SAMSUNG,
         CONF_SAMSUNG_EMAIL: data[CONF_SAMSUNG_EMAIL],
         CONF_SAMSUNG_PASSWORD: data[CONF_SAMSUNG_PASSWORD],
-        CONF_SIGNIN_CLIENT_ID: data[CONF_SIGNIN_CLIENT_ID],
-        CONF_SIGNIN_CLIENT_SECRET: data[CONF_SIGNIN_CLIENT_SECRET],
+        CONF_SIGNIN_CLIENT_ID: signin_id,
+        CONF_SIGNIN_CLIENT_SECRET: signin_sec,
         CONF_SAMSUNG_ACCESS_TOKEN: creds.access_token,
         CONF_DEVICE_ID: data.get(CONF_DEVICE_ID) or hub.device_id,
     }
@@ -150,12 +156,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     title="Samsung Fridge Camera (Samsung Account)", data=data
                 )
 
+        # Only email+password are required; signin_client_id/secret default to
+        # APK-extracted constants (6iado3s6jc / USING_CLIENT_PACKAGE_INFORMATION)
+        # and only need to be overridden if a future SmartThings version ships
+        # with different values.
         schema = vol.Schema(
             {
                 vol.Required(CONF_SAMSUNG_EMAIL): str,
                 vol.Required(CONF_SAMSUNG_PASSWORD): str,
-                vol.Required(CONF_SIGNIN_CLIENT_ID): str,
-                vol.Required(CONF_SIGNIN_CLIENT_SECRET): str,
+                vol.Optional(CONF_SIGNIN_CLIENT_ID, default=DEFAULT_SIGNIN_CLIENT_ID): str,
+                vol.Optional(CONF_SIGNIN_CLIENT_SECRET, default=DEFAULT_SIGNIN_CLIENT_SECRET): str,
                 vol.Optional(CONF_DEVICE_ID): str,
             }
         )

@@ -19,3 +19,10 @@ CONF_SAMSUNG_PASSWORD = "samsung_password"
 CONF_SIGNIN_CLIENT_ID = "signin_client_id"
 CONF_SIGNIN_CLIENT_SECRET = "signin_client_secret"
 CONF_SAMSUNG_ACCESS_TOKEN = "samsung_access_token"
+
+# Defaults extracted from the SmartThings Android APK (com.samsung.android.oneconnect 1.8.45.24).
+# These are the app's own OAuth2 client credentials — the same values every copy of
+# the SmartThings app uses to talk to Samsung's auth endpoint. Known-good; callers can
+# override per-config-entry if a future APK changes them.
+DEFAULT_SIGNIN_CLIENT_ID = "6iado3s6jc"
+DEFAULT_SIGNIN_CLIENT_SECRET = "USING_CLIENT_PACKAGE_INFORMATION"

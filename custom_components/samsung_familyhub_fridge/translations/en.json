@@ -20,12 +20,12 @@
             },
             "samsung_account": {
                 "title": "Samsung Account login",
-                "description": "Sign in with the Samsung Account that owns the fridge. The integration will keep itself logged in automatically (re-authenticates on every 401 — no manual token rotation).\n\nRequired fields:\n\n• **Samsung Account email / password** — the credentials you use at account.samsung.com.\n\n  ⚠ Accounts with 2FA/MFA enabled are NOT supported by the underlying library. Disable 2FA temporarily, or use a sub-account without 2FA for just this integration.\n\n• **signin_client_id** and **signin_client_secret** — these identify the integration as a SmartThings mobile-app client when talking to Samsung's login endpoint. They are NOT your Samsung Account; they're OAuth2 client credentials baked into the SmartThings Android APK. You must extract them once:\n\n  1. Download any recent SmartThings APK (e.g. from apkmirror.com)\n  2. Run `jadx -d out smartthings.apk`\n  3. Grep for the strings: `grep -rE 'signin_client_id|OAUTH_CLIENT_ID' out/sources/`\n  4. Paste the two values into the fields below.\n\n• **device_id** (optional) — if left blank the integration will discover the FamilyHub fridge automatically.",
+                "description": "Sign in with the Samsung Account that owns the fridge. The integration re-authenticates automatically on every 401 — no manual token rotation.\n\n⚠ Accounts with 2FA/MFA enabled are NOT supported by the underlying library. Disable 2FA on this account (or use a dedicated sub-account without 2FA).\n\nThe two advanced fields (signin_client_id / signin_client_secret) are pre-filled with values extracted from the SmartThings Android APK (1.8.45.24). Leave them as-is unless Samsung rolls a new version with different credentials.",
                 "data": {
                     "samsung_email": "Samsung Account email",
                     "samsung_password": "Samsung Account password",
-                    "signin_client_id": "signin_client_id (from SmartThings APK)",
-                    "signin_client_secret": "signin_client_secret (from SmartThings APK)",
+                    "signin_client_id": "signin_client_id (advanced; leave default)",
+                    "signin_client_secret": "signin_client_secret (advanced; leave default)",
                     "device_id": "Device ID (optional — auto-discovered)"
                 }
             },
