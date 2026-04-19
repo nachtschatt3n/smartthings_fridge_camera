@@ -12,35 +12,26 @@
         "step": {
             "user": {
                 "title": "Choose authentication method",
-                "description": "The in-fridge camera feed requires a Samsung Account login because the view-inside endpoint is a Samsung-proprietary (not public SmartThings) API. Use 'Samsung Account' for the camera; use SmartThings OAuth or a PAT if you only need generic data (doors, temps, ice maker — which HA core's SmartThings integration also provides).",
+                "description": "The in-fridge camera feed only works with Samsung Account login. The Personal Access Token (PAT) path is legacy — Samsung now expires new PATs every 24 hours and PATs cannot read the camera endpoint.",
                 "menu_options": {
-                    "samsung_account": "Samsung Account login — camera feed (recommended)",
-                    "oauth": "Reuse HA core SmartThings OAuth — generic data, no password",
-                    "pat": "Personal Access Token — legacy, 24h expiry"
+                    "samsung_account": "Samsung Account login (camera feed, auto-refresh)",
+                    "pat": "Personal Access Token (legacy, no camera, 24h expiry)"
                 }
             },
             "samsung_account": {
                 "title": "Samsung Account login",
-                "description": "Sign in with your Samsung Account email + password. The integration will re-login automatically on every 401 — no manual refresh. Note: accounts with 2FA/MFA enabled are not supported by the underlying library. The signin_client_id and signin_client_secret come from the SmartThings Android app (see the README for extraction steps).",
+                "description": "Sign in with the Samsung Account that owns the fridge. The integration will keep itself logged in automatically (re-authenticates on every 401 — no manual token rotation).\n\nRequired fields:\n\n• **Samsung Account email / password** — the credentials you use at account.samsung.com.\n\n  ⚠ Accounts with 2FA/MFA enabled are NOT supported by the underlying library. Disable 2FA temporarily, or use a sub-account without 2FA for just this integration.\n\n• **signin_client_id** and **signin_client_secret** — these identify the integration as a SmartThings mobile-app client when talking to Samsung's login endpoint. They are NOT your Samsung Account; they're OAuth2 client credentials baked into the SmartThings Android APK. You must extract them once:\n\n  1. Download any recent SmartThings APK (e.g. from apkmirror.com)\n  2. Run `jadx -d out smartthings.apk`\n  3. Grep for the strings: `grep -rE 'signin_client_id|OAUTH_CLIENT_ID' out/sources/`\n  4. Paste the two values into the fields below.\n\n• **device_id** (optional) — if left blank the integration will discover the FamilyHub fridge automatically.",
                 "data": {
                     "samsung_email": "Samsung Account email",
                     "samsung_password": "Samsung Account password",
-                    "signin_client_id": "Signin client ID (from SmartThings APK)",
-                    "signin_client_secret": "Signin client secret (from SmartThings APK)",
+                    "signin_client_id": "signin_client_id (from SmartThings APK)",
+                    "signin_client_secret": "signin_client_secret (from SmartThings APK)",
                     "device_id": "Device ID (optional — auto-discovered)"
-                }
-            },
-            "oauth": {
-                "title": "Reuse SmartThings OAuth credentials",
-                "description": "Select an existing HA core SmartThings integration to borrow its OAuth2 credentials. Tokens refresh automatically. This does NOT enable the camera feed — only generic SmartThings data.",
-                "data": {
-                    "linked_smartthings_entry_id": "SmartThings integration",
-                    "device_id": "Device ID (optional)"
                 }
             },
             "pat": {
                 "title": "SmartThings Personal Access Token",
-                "description": "Tokens created after 2024-12-30 expire every 24 hours. You will need to reauthenticate after each expiry. Does NOT enable the camera feed.",
+                "description": "Tokens created after 2024-12-30 expire every 24 hours. You will need to reauthenticate after each expiry. This mode does NOT enable the camera feed — use Samsung Account login for that.",
                 "data": {
                     "token": "SmartThings Token",
                     "device_id": "Device ID (optional)"

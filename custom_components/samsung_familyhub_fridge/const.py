@@ -8,15 +8,10 @@ DEFAULT_TIMEOUT = 10
 CONF_AUTH_MODE = "auth_mode"
 CONF_TOKEN = "token"
 CONF_DEVICE_ID = "device_id"
-CONF_LINKED_SMARTTHINGS_ENTRY_ID = "linked_smartthings_entry_id"
 
 # Auth mode values
-AUTH_MODE_OAUTH = "oauth"              # reuse HA core smartthings OAuth2 credentials
-AUTH_MODE_PAT = "pat"                  # legacy: raw SmartThings Personal Access Token
-AUTH_MODE_SAMSUNG = "samsung_account"  # Samsung Account email+password (camera-feed capable)
-
-# Domain of the HA core SmartThings integration we piggyback on (oauth mode only)
-SMARTTHINGS_DOMAIN = "smartthings"
+AUTH_MODE_PAT = "pat"                  # legacy: raw SmartThings Personal Access Token (24h, no camera)
+AUTH_MODE_SAMSUNG = "samsung_account"  # Samsung Account email+password (camera-feed capable, auto-refresh)
 
 # Samsung Account mode — config entry data keys
 CONF_SAMSUNG_EMAIL = "samsung_email"

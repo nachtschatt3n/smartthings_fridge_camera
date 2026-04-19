@@ -10,16 +10,13 @@ from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_entry_oauth2_flow
 
 from .api import AuthenticationError, FamilyHub
 from .const import (
-    AUTH_MODE_OAUTH,
     AUTH_MODE_PAT,
     AUTH_MODE_SAMSUNG,
     CONF_AUTH_MODE,
     CONF_DEVICE_ID,
-    CONF_LINKED_SMARTTHINGS_ENTRY_ID,
     CONF_SAMSUNG_ACCESS_TOKEN,
     CONF_SAMSUNG_EMAIL,
     CONF_SAMSUNG_PASSWORD,
@@ -27,7 +24,6 @@ from .const import (
     CONF_SIGNIN_CLIENT_SECRET,
     CONF_TOKEN,
     DOMAIN,
-    SMARTTHINGS_DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -95,51 +91,6 @@ async def _validate_samsung_account(
     }
 
 
-async def _validate_oauth(
-    hass: HomeAssistant, smartthings_entry_id: str, device_id: str | None
-) -> dict[str, Any]:
-    """Validate that we can borrow the SmartThings OAuth session, probe the fridge."""
-    smartthings_entry = hass.config_entries.async_get_entry(smartthings_entry_id)
-    if smartthings_entry is None or smartthings_entry.domain != SMARTTHINGS_DOMAIN:
-        raise CannotConnect(
-            f"Linked SmartThings entry {smartthings_entry_id} not found"
-        )
-
-    impl = await config_entry_oauth2_flow.async_get_config_entry_implementation(
-        hass, smartthings_entry
-    )
-    session = config_entry_oauth2_flow.OAuth2Session(hass, smartthings_entry, impl)
-    try:
-        await session.async_ensure_token_valid()
-    except Exception as err:  # pylint: disable=broad-except
-        raise InvalidAuth from err
-
-    token = session.token["access_token"]
-    hub = FamilyHub(hass, token=token, device_id=device_id)
-    hub.attach_oauth_session(session)
-
-    try:
-        if not await hub.authenticate():
-            raise InvalidAuth
-    except AuthenticationError as err:
-        raise InvalidAuth from err
-
-    return {
-        CONF_AUTH_MODE: AUTH_MODE_OAUTH,
-        CONF_LINKED_SMARTTHINGS_ENTRY_ID: smartthings_entry_id,
-        CONF_DEVICE_ID: device_id or hub.device_id,
-    }
-
-
-def _smartthings_entries(hass: HomeAssistant) -> list[config_entries.ConfigEntry]:
-    """Return all loaded HA core smartthings config entries."""
-    return [
-        e
-        for e in hass.config_entries.async_entries(SMARTTHINGS_DOMAIN)
-        if e.source != config_entries.SOURCE_IGNORE
-    ]
-
-
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Samsung FamilyHub Fridge."""
 
@@ -150,64 +101,18 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """First step — menu: pick auth mode.
 
-        Order matters: `samsung_account` first (camera feed works),
-        then `oauth` (generic data only, no password needed), then `pat`.
+        Two options: Samsung Account (camera + everything) or PAT (legacy,
+        24h expiry, no camera). The 'oauth' (reuse HA core smartthings)
+        mode was removed because it cannot reach the Samsung-proprietary
+        view-inside camera endpoint — if you only need generic fridge
+        data, HA core's SmartThings integration already provides it.
         """
-        options = ["samsung_account"]
-        if _smartthings_entries(self.hass):
-            options.append("oauth")
-        options.append("pat")
-        return self.async_show_menu(step_id="user", menu_options=options)
+        return self.async_show_menu(
+            step_id="user",
+            menu_options=["samsung_account", "pat"],
+        )
 
     # ---------------- OAuth path ----------------
-
-    async def async_step_oauth(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Offer to reuse an existing HA core SmartThings OAuth entry."""
-        entries = _smartthings_entries(self.hass)
-        if not entries:
-            return await self.async_step_pat()
-
-        errors: dict[str, str] = {}
-        options = {e.entry_id: e.title or e.entry_id for e in entries}
-
-        if user_input is not None:
-            try:
-                data = await _validate_oauth(
-                    self.hass,
-                    user_input[CONF_LINKED_SMARTTHINGS_ENTRY_ID],
-                    user_input.get(CONF_DEVICE_ID) or None,
-                )
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception during OAuth validation")
-                errors["base"] = "unknown"
-            else:
-                if self._is_existing_entry_flow():
-                    # Reauth / reconfigure: update the existing entry and abort.
-                    existing = (
-                        self._get_reauth_entry()
-                        if self.source == config_entries.SOURCE_REAUTH
-                        else self._get_reconfigure_entry()
-                    )
-                    return self.async_update_reload_and_abort(existing, data=data)
-                return self.async_create_entry(
-                    title="Samsung Fridge Camera (OAuth)", data=data
-                )
-
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_LINKED_SMARTTHINGS_ENTRY_ID): vol.In(options),
-                vol.Optional(CONF_DEVICE_ID): str,
-            }
-        )
-        return self.async_show_form(
-            step_id="oauth", data_schema=schema, errors=errors
-        )
 
     # --- Helpers -------------------------------------------------------------
 
@@ -299,12 +204,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle re-authentication when the token has expired.
 
-        Always route to the user menu — this lets users with PAT-mode
-        entries switch to OAuth-mode on the fly when they hit the 24h
-        PAT expiry, rather than being stuck re-entering new PATs.
-        OAuth-mode entries never reach here in practice (OAuth2Session
-        refreshes transparently), but if they do, the menu is the right
-        landing page.
+        Always route to the menu so users can switch between Samsung
+        Account and PAT modes when their PAT expires (24h) rather than
+        being stuck re-entering new PATs forever.
         """
         return await self.async_step_user()
 
@@ -314,7 +216,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the Reconfigure button on the integration card.
 
         Routes to the same menu the initial setup uses — lets users
-        switch between PAT and OAuth modes without deleting and re-adding.
+        switch between Samsung Account and PAT modes.
         """
         return await self.async_step_user()
 

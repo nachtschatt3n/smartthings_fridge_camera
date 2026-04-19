@@ -2,14 +2,15 @@
 
 Auth modes (data["auth_mode"]):
 
-- "oauth"  : Reuse the HA core `smartthings` integration's OAuth2 credentials.
-             Tokens refresh automatically via HA's OAuth2Session — no manual
-             PAT rotation. Requires a working `smartthings` config entry
-             referenced by `data["linked_smartthings_entry_id"]`.
+- "samsung_account" : Samsung Account email + password. The integration
+             re-logs in on every 401 to produce a fresh OEM bearer token
+             that works on the Samsung-proprietary view-inside camera
+             endpoint. This is the only mode that unlocks the camera feed.
 
 - "pat"    : Legacy SmartThings Personal Access Token (raw string). Samsung
              deprecated indefinite PATs on 2024-12-30 — new PATs expire after
-             24 hours. Retained for backwards compatibility only.
+             24 hours. Retained for backwards compatibility. Does NOT enable
+             the camera feed.
 
 Config entries created before this integration version stored `{token, device_id}`
 without an `auth_mode` key; they are migrated to `auth_mode: "pat"` on first
@@ -24,16 +25,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import config_entry_oauth2_flow
 
 from .api import FamilyHub
 from .const import (
-    AUTH_MODE_OAUTH,
     AUTH_MODE_PAT,
     AUTH_MODE_SAMSUNG,
     CONF_AUTH_MODE,
     CONF_DEVICE_ID,
-    CONF_LINKED_SMARTTHINGS_ENTRY_ID,
     CONF_SAMSUNG_ACCESS_TOKEN,
     CONF_SAMSUNG_EMAIL,
     CONF_SAMSUNG_PASSWORD,
@@ -41,7 +39,6 @@ from .const import (
     CONF_SIGNIN_CLIENT_SECRET,
     CONF_TOKEN,
     DOMAIN,
-    SMARTTHINGS_DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,9 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     auth_mode = entry.data.get(CONF_AUTH_MODE, AUTH_MODE_PAT)
     device_id = entry.data.get(CONF_DEVICE_ID)
 
-    if auth_mode == AUTH_MODE_OAUTH:
-        hub = await _build_oauth_hub(hass, entry, device_id)
-    elif auth_mode == AUTH_MODE_SAMSUNG:
+    if auth_mode == AUTH_MODE_SAMSUNG:
         hub = await _build_samsung_hub(hass, entry, device_id)
     else:
         # Legacy PAT path — unchanged from v0.0.x.
@@ -88,48 +83,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "refresh", _handle_refresh)
 
     return True
-
-
-async def _build_oauth_hub(
-    hass: HomeAssistant, entry: ConfigEntry, device_id: str | None
-) -> FamilyHub:
-    """Construct a FamilyHub that borrows the HA core smartthings OAuth session.
-
-    Raises ConfigEntryNotReady if the linked smartthings entry is missing or
-    not loaded yet — HA will retry the setup automatically.
-    """
-    linked_id = entry.data.get(CONF_LINKED_SMARTTHINGS_ENTRY_ID)
-    if not linked_id:
-        raise ConfigEntryNotReady(
-            "OAuth-mode entry missing linked_smartthings_entry_id — "
-            "reconfigure to re-link the HA core SmartThings integration."
-        )
-
-    smartthings_entry = hass.config_entries.async_get_entry(linked_id)
-    if smartthings_entry is None or smartthings_entry.domain != SMARTTHINGS_DOMAIN:
-        raise ConfigEntryNotReady(
-            f"Linked SmartThings entry {linked_id} not found. "
-            "Re-add the HA core SmartThings integration and reconfigure this one."
-        )
-
-    impl = await config_entry_oauth2_flow.async_get_config_entry_implementation(
-        hass, smartthings_entry
-    )
-    session = config_entry_oauth2_flow.OAuth2Session(hass, smartthings_entry, impl)
-
-    try:
-        await session.async_ensure_token_valid()
-    except Exception as err:  # pylint: disable=broad-except
-        # OAuth2Session wraps errors in aiohttp/client exceptions. The SmartThings
-        # entry itself will handle reauth — we just need to back off here.
-        raise ConfigEntryNotReady(
-            f"Failed to obtain a fresh SmartThings OAuth token: {err}"
-        ) from err
-
-    token = session.token["access_token"]
-    hub = FamilyHub(hass, token=token, device_id=device_id)
-    hub.attach_oauth_session(session)
-    return hub
 
 
 async def _build_samsung_hub(

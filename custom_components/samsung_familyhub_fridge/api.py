@@ -2,7 +2,6 @@ from __future__ import annotations
 from datetime import timedelta
 import logging
 import time
-from typing import TYPE_CHECKING
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -13,9 +12,6 @@ import requests
 from homeassistant.core import HomeAssistant
 
 from .const import CID, DEFAULT_TIMEOUT
-
-if TYPE_CHECKING:
-    from homeassistant.helpers import config_entry_oauth2_flow
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,25 +100,19 @@ class DataCoordinator(DataUpdateCoordinator):
 class FamilyHub:
     """SmartThings Family Hub fridge API client.
 
-    Three auth modes:
+    Two auth modes:
 
     1. PAT mode (default): caller provides a raw SmartThings token via
        `token=`. Token is static; caller is responsible for refresh via
-       `update_token()`.
+       `update_token()`. Samsung deprecated indefinite PATs on 2024-12-30
+       — new PATs expire every 24h. Does NOT reach the view-inside camera.
 
-    2. OAuth mode: after construction, caller attaches an
-       ``OAuth2Session`` via `attach_oauth_session(session)`. Before every
-       API call the coordinator awaits `async_ensure_fresh_token()` which
-       asks HA's OAuth2Session to refresh the access token if it's close
-       to expiry — no manual refresh needed. Works for generic SmartThings
-       data but NOT the Samsung-proprietary view-inside camera endpoint.
-
-    3. Samsung Account mode: caller attaches email+password credentials via
+    2. Samsung Account mode: caller attaches email+password credentials via
        `attach_samsung_credentials(...)`. The hub can then re-login via
-       `async_ensure_fresh_token()` to obtain a fresh OEM bearer token that
+       `async_relogin_samsung()` to obtain a fresh OEM bearer token that
        works on the Samsung camera endpoint (`client.smartthings.com/...`).
        `SamsungAccountAuth.login()` is idempotent, so on any 401 we just
-       re-log in.
+       re-log in — this is our "refresh" flow.
     """
 
     def __init__(self, hass: HomeAssistant, token: str, device_id: str) -> None:
@@ -137,17 +127,10 @@ class FamilyHub:
         self.last_closed = None
         self.should_update = False
         self.downloaded_images = [None, None, None]
-        self._oauth_session: "config_entry_oauth2_flow.OAuth2Session | None" = None
         self._samsung_credentials: dict | None = None
         # Callback the hub invokes when it refreshes the Samsung access_token
         # (allows __init__.py to persist the new token to the config entry).
         self._samsung_token_updated_cb = None
-
-    def attach_oauth_session(
-        self, session: "config_entry_oauth2_flow.OAuth2Session"
-    ) -> None:
-        """Bind an HA OAuth2Session so tokens refresh automatically (OAuth mode)."""
-        self._oauth_session = session
 
     def attach_samsung_credentials(
         self,
@@ -177,18 +160,11 @@ class FamilyHub:
     async def async_ensure_fresh_token(self) -> None:
         """Make sure the bearer token is valid before an API call.
 
-        - OAuth mode: delegate to HA's OAuth2Session.
         - Samsung mode: no-op unless the token is missing (initial setup
           typically populates it). 401 recovery happens in `relogin_samsung()`,
           which the coordinator calls on demand.
         - PAT mode: no-op.
         """
-        if self._oauth_session is not None:
-            await self._oauth_session.async_ensure_token_valid()
-            new_token = self._oauth_session.token.get("access_token")
-            if new_token and new_token != self.token:
-                self.update_token(new_token)
-            return
         if self._samsung_credentials is not None and not self.token:
             await self.async_relogin_samsung()
 
