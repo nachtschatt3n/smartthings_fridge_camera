@@ -141,6 +141,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception during OAuth validation")
                 errors["base"] = "unknown"
             else:
+                if self._is_existing_entry_flow():
+                    # Reauth / reconfigure: update the existing entry and abort.
+                    existing = (
+                        self._get_reauth_entry()
+                        if self.source == config_entries.SOURCE_REAUTH
+                        else self._get_reconfigure_entry()
+                    )
+                    return self.async_update_reload_and_abort(existing, data=data)
                 return self.async_create_entry(
                     title="Samsung Fridge Camera (OAuth)", data=data
                 )
@@ -153,6 +161,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(
             step_id="oauth", data_schema=schema, errors=errors
+        )
+
+    # --- Helpers -------------------------------------------------------------
+
+    def _is_existing_entry_flow(self) -> bool:
+        """True if this flow is reauth- or reconfigure-ing an existing entry."""
+        return self.source in (
+            config_entries.SOURCE_REAUTH,
+            config_entries.SOURCE_RECONFIGURE,
         )
 
     # ---------------- PAT path (legacy) ----------------
@@ -174,6 +191,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             else:
                 data = {**info, CONF_AUTH_MODE: AUTH_MODE_PAT}
+                if self._is_existing_entry_flow():
+                    existing = (
+                        self._get_reauth_entry()
+                        if self.source == config_entries.SOURCE_REAUTH
+                        else self._get_reconfigure_entry()
+                    )
+                    return self.async_update_reload_and_abort(existing, data=data)
                 return self.async_create_entry(
                     title="Samsung Fridge Camera", data=data
                 )
